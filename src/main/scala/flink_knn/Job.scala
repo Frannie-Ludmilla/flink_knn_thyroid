@@ -38,6 +38,7 @@ object Job {
   def main(args: Array[String]) {
     // set up the execution environment
     val env = ExecutionEnvironment.getExecutionEnvironment
+    env.setParallelism(4)
 
     //Usage: [-k num] [-m euclidean | gower] [-in path_to_input] [-outputPath path_to_output] [-s (itemtoParse)] [-set susy |thyroid]
     val parameters : ParameterTool = ParameterTool.fromArgs(args)
@@ -65,21 +66,22 @@ object Job {
         trainingSet_toParse.map(ParsingUtils.parseThyroidLabelledInstance(_))
     }
 
+    def min(a:Double, b: Double): Double =  if(a < b) a else b
+    def max(a: Double, b: Double): Double = if(a > b) a else b
 
-    def extractFeatureMinMaxVectors[T <: DenseVector](dataSet: DataSet[DenseVector])
+
+
+    def extractFeatureMinMaxVectors(dataSet: DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])])
     : DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])] = {
       //val minMax_dense: DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])] = dataSet.map{v =>
-      val minMax_dense = dataSet.map(v =>
-        (BreezeDenseVector(v.data), BreezeDenseVector(v.data)))
-
-      val minMax= minMax_dense.reduce{
+      //val minMax_dense = dataSet.map(v =>(BreezeDenseVector(v.data), BreezeDenseVector(v.data)))
+      dataSet.reduce{
         (minMax1, minMax2) => {
           val tempMinimum = breeze.linalg.min(minMax1._1, minMax2._1)
           val tempMaximum = breeze.linalg.max(minMax1._2, minMax2._2)
           (tempMinimum, tempMaximum)
         }
       }
-      minMax
     }
 
     val range: Option[DenseVector] =
@@ -88,8 +90,8 @@ object Job {
         val onlyVector = trainingSet.map{x =>
           val vector = x.vector
           vector match {
-            case vector: SparseVector => vector.toDenseVector
-            case vector: DenseVector => vector
+            case vector: SparseVector => (BreezeDenseVector(vector.toDenseVector.data), BreezeDenseVector(vector.toDenseVector.data))
+            case vector: DenseVector => (BreezeDenseVector(vector.data), BreezeDenseVector(vector.data))
           }
         }
         val minMax: DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])] = extractFeatureMinMaxVectors(onlyVector)
@@ -173,8 +175,19 @@ object Job {
     }
 
     val toBroadcast: DataSet[Args2Broadcast] = env.fromElements(Args2Broadcast(k_from_args,testInstance,metric))
-    val TopK_local : DataSet[DistanceWithLabel]= trainingSet.mapPartition(new mapWithQueue)
-      .withBroadcastSet(toBroadcast, "kUserMetric")
+
+    /*
+    val TopK_local : DataSet[DistanceWithLabel]={
+      val metric2=
+        if(metric==MetricDistance.EUCLIDEAN) EuclideanDistanceMetric() else GowerDistance(range.get)
+
+      trainingSet.map{x =>
+          val dist:Double = metric2.distance(x.vector, testInstance)
+          new DistanceWithLabel(dist,x.label)
+        }
+    }*/
+
+    val TopK_local : DataSet[DistanceWithLabel]= trainingSet.mapPartition(new mapWithQueue).withBroadcastSet(toBroadcast, "kUserMetric")
     val TopK: DataSet[DistanceWithLabel]= env.fromCollection(TopK_local.reduceGroup(new reduceWithQueue).collect())
     val sortedTopK= TopK.map(x => (x.dist, x.label)).groupBy(0).sortGroup(0,Order.ASCENDING).first(k_from_args)
     //Adding overwrite such that if there are existing files it overwrites them without making the job fail
