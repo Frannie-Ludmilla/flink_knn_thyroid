@@ -13,3 +13,4 @@ cat recordS.txt | awk 'BEGIN{FS=OFS=","}{$1="";sub(",","")}1' >> recordSusy.txt
 RECORDSUSY=`cat recordSusy.txt`
 INPUTS="/home/Francine/SUSY/SUSY_90.csv"
 flink run ./target/flink_knn-0.1.jar --k 10 --m gower --s ${RECORDSUSY} --in ${INPUTS} --outputPath /home/Francine/flink_knn_susy.csv --set susy
+flink run ./target/flink_knn-0.1.jar --k 10 --m gower --s ${RECORDSUSY} --in ${INPUTS} --outputPath /home/Francine/flink_knn_susy1.csv --set susy

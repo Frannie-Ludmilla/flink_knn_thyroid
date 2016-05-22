@@ -1,5 +1,7 @@
 package flink_knn
 
+import java.io.File
+
 import org.apache.flink.api.java.utils.ParameterTool
 import org.apache.flink.api.scala._
 import flink_knn.Utils._
@@ -12,8 +14,9 @@ import org.apache.flink.ml.math.{DenseVector, SparseVector}
 import org.apache.flink.ml.metrics.distances.{EuclideanDistanceMetric, TanimotoDistanceMetric}
 import org.apache.flink.util.Collector
 import java.lang.Iterable
+import java.io.File
 
-import breeze.linalg.{Vector => BreezeVector, DenseVector => BreezeDenseVector}
+import breeze.linalg.{DenseVector => BreezeDenseVector, Vector => BreezeVector}
 import org.apache.flink.api.common.operators.Order
 import org.apache.flink.core.fs.FileSystem.WriteMode
 
@@ -84,21 +87,37 @@ object Job {
       }
     }
 
+    //We want to read the range from file
+    //val resourcesPath = getClass.getResource("range.csv")
+    //println(resourcesPath.getPath)
+    val currentPath= new File(".").getAbsolutePath()
+    val rangeFile= if(dataset2Use==DatasetType.SUSY) new File(currentPath+"range_susy.csv") else new File(currentPath+"range_thyroid.csv")
+    val rangeVectorFromFile: Option[DenseVector]= if(rangeFile.exists()){
+      val vectData: DenseVector= env.readTextFile(rangeFile.getPath).map(ParsingUtils.parseSUSYInstanceCSV(_)).collect().seq(0)
+      Some(vectData)
+    } else None
+
+
+
     val range: Option[DenseVector] =
       if(metric== MetricDistance.GOWER){
-        //Calculate range iff the metric in use is the Gower
-        val onlyVector = trainingSet.map{x =>
-          val vector = x.vector
-          vector match {
-            case vector: SparseVector => (BreezeDenseVector(vector.toDenseVector.data), BreezeDenseVector(vector.toDenseVector.data))
-            case vector: DenseVector => (BreezeDenseVector(vector.data), BreezeDenseVector(vector.data))
+        if(rangeVectorFromFile.isDefined)
+          Some(rangeVectorFromFile.get)
+        else{
+          //Calculate range iff the metric in use is the Gower
+          val onlyVector = trainingSet.map { x =>
+            val vector = x.vector
+            vector match {
+              case vector: SparseVector => (BreezeDenseVector(vector.toDenseVector.data), BreezeDenseVector(vector.toDenseVector.data))
+              case vector: DenseVector => (BreezeDenseVector(vector.data), BreezeDenseVector(vector.data))
+            }
           }
+          val minMax: DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])] = extractFeatureMinMaxVectors(onlyVector)
+          val minimum = minMax.collect().seq(0)._1
+          val maximum = minMax.collect().seq(0)._2
+          val dense = DenseVector((maximum - minimum).toArray)
+          Some(dense)
         }
-        val minMax: DataSet[(BreezeDenseVector[Double], BreezeDenseVector[Double])] = extractFeatureMinMaxVectors(onlyVector)
-        val minimum = minMax.collect().seq(0)._1
-        val maximum = minMax.collect().seq(0)._2
-        val dense = DenseVector((maximum - minimum).toArray)
-        Some(dense)
       } else None
 
     case class DistanceWithLabel(dist: Double, label: Double) extends Ordered[DistanceWithLabel] {
@@ -192,6 +211,23 @@ object Job {
     val sortedTopK= TopK.map(x => (x.dist, x.label)).groupBy(0).sortGroup(0,Order.ASCENDING).first(k_from_args)
     //Adding overwrite such that if there are existing files it overwrites them without making the job fail
     sortedTopK.writeAsCsv(prefix_localPath+outputPath,"\n",",", WriteMode.OVERWRITE).setParallelism(1)
+
+    /*
+    val resultFile= new File(tempFilePath)
+    if(resultFile.exists()){
+      import scala.io.Source
+      val bufferedSource = Source.fromFile(resultFile)
+      var classLabel: Option[String] = None
+      for (line <- bufferedSource.getLines) {
+        println(line)
+        classLabel= Some(line)
+      }
+      bufferedSource.close*/
+
+    if(range.isDefined && rangeVectorFromFile.isEmpty)
+      env.fromCollection(range).map{ x =>
+        x.data.map(y => f"$y%e").mkString(",")
+      }.writeAsText("file://"+rangeFile.getPath, WriteMode.OVERWRITE).setParallelism(1)
     //Write to output
 
     env.execute("KNN-Flink")
