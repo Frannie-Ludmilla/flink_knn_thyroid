@@ -146,15 +146,24 @@ object Job {
         val prioritykQueue= mutable.PriorityQueue[DistanceWithLabel]()(orderByDistance)
         val record_iterator= iterable.iterator
         val metric= if(metric2Use==MetricDistance.EUCLIDEAN) EuclideanDistanceMetric() else GowerDistance(range.get)
+        var minItem: Option[DistanceWithLabel] = None
 
         while(record_iterator.hasNext){
           val in: LabeledVector = record_iterator.next()
           val currentInstance: DistanceWithLabel = {
             val dist:Double = metric.distance(in.vector, testInstance)
             new DistanceWithLabel(dist,in.label)
+          }
+          if (k_from_args == 1) {
+            if (minItem.isEmpty)
+              minItem = Some(currentInstance)
+            else {
+              if (minItem.get.dist > currentInstance.dist)
+                minItem = Some(currentInstance)
             }
-
-          if (prioritykQueue.size < maxK)
+          }
+          else {
+            if (prioritykQueue.size <= maxK)
               prioritykQueue += currentInstance
 
             else {
@@ -163,10 +172,14 @@ object Job {
                 prioritykQueue += currentInstance
               }
             }
-
+          }
         }
-        while(!prioritykQueue.isEmpty)
-          collector.collect(prioritykQueue.dequeue())
+        if(k_from_args==1)
+          collector.collect(minItem.get)
+        else{
+          while(!prioritykQueue.isEmpty)
+            collector.collect(prioritykQueue.dequeue())
+        }
       }
     }
 
@@ -174,22 +187,35 @@ object Job {
       override def reduce(iterable: Iterable[DistanceWithLabel], collector: Collector[DistanceWithLabel]): Unit = {
         val prioritykQueue= mutable.PriorityQueue[DistanceWithLabel]()(orderByDistance)
         val record_iterator= iterable.iterator()
+        var minItem: Option[DistanceWithLabel] = None
 
         while(record_iterator.hasNext){
           val in:DistanceWithLabel= record_iterator.next()
-
-          if(prioritykQueue.size < k_from_args)
-            prioritykQueue+= in
-
+          if(k_from_args==1){
+            if(minItem.isEmpty)
+              minItem= Some(in)
+            else{
+              if(minItem.get.dist> in.dist)
+                minItem= Some(in)
+            }
+          }
           else{
-            if(prioritykQueue.head.dist > in.dist){
-              prioritykQueue.dequeue()
+            if(prioritykQueue.size <= k_from_args)
               prioritykQueue+= in
+            else{
+              if(prioritykQueue.head.dist > in.dist){
+                prioritykQueue.dequeue()
+                prioritykQueue+= in
+              }
             }
           }
         }
-        while(!prioritykQueue.isEmpty)
-          collector.collect(prioritykQueue.dequeue())
+        if(k_from_args==1)
+          collector.collect(minItem.get)
+        else{
+          while(!prioritykQueue.isEmpty)
+            collector.collect(prioritykQueue.dequeue())
+        }
       }
     }
 
@@ -206,7 +232,9 @@ object Job {
         }
     }*/
 
-    val TopK_local : DataSet[DistanceWithLabel]= trainingSet.mapPartition(new mapWithQueue).withBroadcastSet(toBroadcast, "kUserMetric")
+    val TopK_local : DataSet[DistanceWithLabel]=
+        trainingSet.mapPartition(new mapWithQueue).withBroadcastSet(toBroadcast, "kUserMetric")
+
     val TopK: DataSet[DistanceWithLabel]= env.fromCollection(TopK_local.reduceGroup(new reduceWithQueue).collect())
     val sortedTopK= TopK.map(x => (x.dist, x.label)).groupBy(0).sortGroup(0,Order.ASCENDING).first(k_from_args)
     //Adding overwrite such that if there are existing files it overwrites them without making the job fail
